@@ -77,16 +77,23 @@ def main():
             unique_articles = list({a['url']: a for a in all_articles if a.get('url')}.values())
             supabase.table("news").upsert(unique_articles, on_conflict=["url"]).execute()
 
-            # 发送热点新闻折叠消息
+            # 获取数据库总量
+            db_count_res = supabase.table("news").select("id").execute()
+            total_count = len(db_count_res.data) if db_count_res.data else 0
+
+            # 发送热点新闻图文消息
             HOT_COUNT = 12
             hot_articles = unique_articles[:HOT_COUNT]
+            header = f"抓取完成：本次获取 {len(all_articles)} 条 | 数据库总量 {total_count} 条\n"
             body_lines = []
             for a in hot_articles:
+                img = a.get("image_url") or ""
                 title = a.get("title", "无标题")
-                desc = a.get("description", "")
-                snippet = desc[:50] + ("..." if len(desc) > 50 else "")
-                body_lines.append(f"- {title}: {snippet}")
-            body = "\n".join(body_lines)
+                source = a.get("source", "未知来源")
+                published = a.get("published_at", "")[:10]
+                desc = (a.get("description") or "")[:100] + ("..." if len(a.get("description") or "") > 100 else "")
+                body_lines.append(f"![thumb]({img})\n**{title}**\n来源: {source} · {published}\n{desc}\n")
+            body = header + "\n".join(body_lines)
             push_bark(f"新闻抓取完成 共{len(unique_articles)}条", body)
         except Exception as e:
             print("Supabase 写入失败:", e)
