@@ -1,0 +1,30 @@
+name: News Fetcher
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 每天 0:00 UTC 执行（北京时间早上 8 点）
+  workflow_dispatch:       # 可手动触发执行
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+        run: python news_fetcher.py
