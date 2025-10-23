@@ -38,9 +38,8 @@ def push_bark(title, body):
 # ------------------- 新闻抓取 -------------------
 def fetch_news(category=None, language="en"):
     params = {"apiKey": NEWS_API_KEY, "pageSize": 50, "language": language}
-    # NewsAPI 的 category 参数仅支持部分英文分类，针对自定义标签可以用 q 搜索
     if category not in ["general", "business", "entertainment", "health", "science", "sports", "technology"]:
-        params["q"] = category  # 用关键字搜索
+        params["q"] = category
     else:
         params["category"] = category
     try:
@@ -74,10 +73,13 @@ def main():
 
     if all_articles:
         try:
-            supabase.table("news").upsert(all_articles, on_conflict=["url"]).execute()
+            # 去重同一 URL
+            unique_articles = list({a['url']: a for a in all_articles if a.get('url')}.values())
+            supabase.table("news").upsert(unique_articles, on_conflict=["url"]).execute()
+
             # 发送热点新闻折叠消息
             HOT_COUNT = 12
-            hot_articles = all_articles[:HOT_COUNT]
+            hot_articles = unique_articles[:HOT_COUNT]
             body_lines = []
             for a in hot_articles:
                 title = a.get("title", "无标题")
@@ -85,7 +87,7 @@ def main():
                 snippet = desc[:50] + ("..." if len(desc) > 50 else "")
                 body_lines.append(f"- {title}: {snippet}")
             body = "\n".join(body_lines)
-            push_bark(f"新闻抓取完成 共{len(all_articles)}条", body)
+            push_bark(f"新闻抓取完成 共{len(unique_articles)}条", body)
         except Exception as e:
             print("Supabase 写入失败:", e)
             push_bark("新闻抓取失败", str(e))
