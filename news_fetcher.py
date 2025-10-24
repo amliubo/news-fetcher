@@ -26,14 +26,19 @@ LANGUAGES = ["en", "zh"]  # 英文和中文
 # ------------------- Bark 推送 -------------------
 def push_bark(title, body):
     try:
-        params = {"title": title, "body": body, "isArchive": 1}
-        resp = requests.get(BARK_URL, params=params)
+        data = {
+            "title": title,
+            "body": body,
+            "isArchive": 1,
+        }
+        resp = requests.post(BARK_URL, json=data, timeout=10)
         if resp.status_code == 200:
             print(f"✅ Bark 推送成功：{title}")
         else:
             print(f"❌ Bark 推送失败：{resp.text}")
     except Exception as e:
         print("Bark Error:", e)
+
 
 # ------------------- 新闻抓取 -------------------
 def fetch_news(category=None, language="en"):
