@@ -39,14 +39,17 @@ def push_bark(title, body):
     except Exception as e:
         print("Bark Error:", e)
 
-
 # ------------------- 新闻抓取 -------------------
 def fetch_news(category=None, language="en"):
-    params = {"apiKey": NEWS_API_KEY, "pageSize": 50, "language": language}
-    if category not in ["general", "business", "entertainment", "health", "science", "sports", "technology"]:
-        params["q"] = category
+    params = {"apiKey": NEWS_API_KEY, "pageSize": 50}
+    if language == "zh":
+        params["q"] = category  # 中文用关键字搜索
     else:
-        params["category"] = category
+        params["language"] = language
+        if category not in ["general", "business", "entertainment", "health", "science", "sports", "technology"]:
+            params["q"] = category
+        else:
+            params["category"] = category
     try:
         res = requests.get("https://newsapi.org/v2/top-headlines", params=params, timeout=10)
         res.raise_for_status()
@@ -87,17 +90,25 @@ def main():
             total_count = len(db_count_res.data) if db_count_res.data else 0
 
             # 发送热点新闻图文消息
-            HOT_COUNT = 12
+            HOT_COUNT = 10  # 控制数量
+            IMAGE_COUNT = 5  # 前5条显示图片
             hot_articles = unique_articles[:HOT_COUNT]
             header = f"抓取完成：本次获取 {len(all_articles)} 条 | 数据库总量 {total_count} 条\n"
             body_lines = []
-            for a in hot_articles:
-                img = a.get("image_url") or ""
+            for idx, a in enumerate(hot_articles):
                 title = a.get("title", "无标题")
                 source = a.get("source", "未知来源")
                 published = a.get("published_at", "")[:10]
                 desc = (a.get("description") or "")[:100] + ("..." if len(a.get("description") or "") > 100 else "")
-                body_lines.append(f"![thumb]({img})\n**{title}**\n来源: {source} · {published}\n{desc}\n")
+
+                if idx < IMAGE_COUNT:
+                    img = a.get("image_url")
+                    if not img or not img.startswith("https"):
+                        img = "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"  # 默认图
+                    body_lines.append(f"![thumb]({img})\n**{title}**\n来源: {source} · {published}\n{desc}\n")
+                else:
+                    body_lines.append(f"**{title}**\n来源: {source} · {published}\n{desc}\n")
+
             body = header + "\n".join(body_lines)
             push_bark(f"新闻抓取完成 共{len(unique_articles)}条", body)
         except Exception as e:
