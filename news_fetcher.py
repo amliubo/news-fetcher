@@ -3,6 +3,7 @@ import edge_tts
 import asyncio
 import textwrap
 import requests
+import feedparser
 import numpy as np
 from openai import OpenAI
 from supabase import create_client
@@ -11,6 +12,7 @@ from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 # ---------------- OpenAI ----------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -38,29 +40,68 @@ def push_bark(title, body):
     except Exception as e:
         print("Bark Error:", e)
 
-# ---------------- 新闻抓取 ----------------
 def fetch_news(category=None, language="en"):
-    params = {"apiKey": NEWS_API_KEY,"pageSize":50}
-    if language=="zh": params["q"]=category
+    if language == "zh":
+        rss_map = {
+            "ai": "https://rss.sina.com.cn/tech/ai.xml",
+            "technology": "https://rss.sina.com.cn/tech/rollnews.xml",
+            "business": "https://rss.sina.com.cn/finance/rollnews.xml",
+            "sports": "https://rss.sina.com.cn/sports/global.xml",
+            "automobile": "https://rss.sina.com.cn/auto/newcar.xml",
+            "car_maintenance": "https://rss.sina.com.cn/auto/service.xml",
+        }
+        rss_url = rss_map.get(category, "https://rss.sina.com.cn/tech/rollnews.xml")
+        print(f"[Info] Fetching 国内新闻 from {rss_url}")
+
+        try:
+            feed = feedparser.parse(rss_url)
+            articles = []
+            for entry in feed.entries[:30]:
+                articles.append({
+                    "title": entry.get("title", ""),
+                    "description": entry.get("summary", ""),
+                    "url": entry.get("link", ""),
+                    "source_name": "新浪新闻",
+                    "author": "",
+                    "image_url": entry.get("media_content", [{}])[0].get("url") \
+                        if "media_content" in entry else \
+                        entry.get("media_thumbnail", [{}])[0].get("url") \
+                        if "media_thumbnail" in entry else \
+                        "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg",
+
+                    "published_at": entry.get("published", datetime.now().isoformat()),
+                    "category": category or "technology",
+                    "language": "zh"
+                })
+            print(f"[Succ] zh-{category} 获取 {len(articles)} 条新闻")
+            return articles
+        except Exception as e:
+            print(f"[Fail] 获取 zh-{category} 新闻失败:", e)
+            return []
+
+    # ------------------- 国外新闻（使用 NewsAPI） -------------------
+    params = {"apiKey": NEWS_API_KEY, "pageSize": 50}
+    if language == "zh":
+        params["q"] = category
     else:
-        params["language"]=language
-        if category not in ["general","business","entertainment","health","science","sports","technology"]:
-            params["q"]=category
-        else: params["category"]=category
+        params["language"] = language
+        if category not in ["general", "business", "entertainment", "health", "science", "sports", "technology"]:
+            params["q"] = category
+        else:
+            params["category"] = category
+
     try:
         res = requests.get("https://newsapi.org/v2/top-headlines", params=params, timeout=10)
         res.raise_for_status()
-        return res.json().get("articles",[])
+        articles = res.json().get("articles", [])
+        print(f"[Succ] {language}-{category} 获取 {len(articles)} 条新闻")
+        return articles
     except Exception as e:
         print(f"[Fail] 获取 {language}-{category} 新闻失败:", e)
         return []
 
 # ---------------- AI解读 ----------------
-
 def generate_short_script(title, description, max_chars=70):
-    """
-    将新闻标题 + 描述生成适合 30 秒视频的简短解说稿
-    """
     prompt = f"""
     请将以下新闻内容改写为适合 30 秒视频的中文解说稿，尽量简短精炼，字数控制在 {max_chars} 字左右：
     标题: {title}
@@ -75,7 +116,6 @@ def generate_short_script(title, description, max_chars=70):
         return short_text
     except Exception as e:
         print("[Fail] 自动生成简短文案失败:", e)
-        # 如果失败则退化为截取标题+前 max_chars 字
         return f"{title}。{description[:max_chars]}..."
 
 # ---------------- TTS ----------------
@@ -85,7 +125,7 @@ async def generate_tts(text, output):
     await communicate.save(output)
 
 # ---------------- 视频生成 ----------------
-def create_text_clip(text, duration, font_path=r"C:\Windows\Fonts\msyh.ttc", font_size=36, size=(1080,200)):
+def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", font_size=36, size=(1080,200)):
     img = Image.new("RGBA", size, (0,0,0,150))
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
@@ -102,8 +142,8 @@ def generate_video(image_path, audio_path, text, output_path):
     video.write_videofile(output_path, fps=24)
     print(f"[Succ] 视频生成完成: {output_path}")
 
-# ---------------- 主流程 ----------------
-def main():
+# ---------------- 异步主流程 ----------------
+async def main():
     today = datetime.now().strftime("%Y-%m-%d")
     base_dir = os.path.join("videos", today)
     os.makedirs(base_dir, exist_ok=True)
@@ -122,16 +162,41 @@ def main():
         push_bark("新闻抓取","未获取到新闻数据")
         return
 
-    # 去重 & 写入数据库
+    # 去重
     unique_articles = list({a['url']:a for a in all_articles if a.get('url')}.values())
-    supabase.table("news").upsert(unique_articles, on_conflict=["url"]).execute()
 
-    # 循环生成视频
+    # 清理字段
+    table_fields = ["title","description","url","source_name","author","image_url","published_at","source","category","language"]
+    cleaned_articles = []
+    for a in unique_articles:
+        record = {
+            "title": a.get("title"),
+            "description": a.get("description"),
+            "url": a.get("url"),
+            "source_name": (a.get("source") or {}).get("name") or a.get("source_name"),
+            "author": a.get("author"),
+            "image_url": a.get("image_url") or a.get("urlToImage"),
+            "published_at": a.get("publishedAt") or a.get("published_at"),
+            "source": a.get("source") or "",
+            "category": a.get("category"),
+            "language": a.get("language")
+        }
+        record = {k:v for k,v in record.items() if k in table_fields}
+        cleaned_articles.append(record)
+
+    try:
+        supabase.table("news").upsert(cleaned_articles, on_conflict=["url"]).execute()
+        print(f"[Succ] 已写入 {len(cleaned_articles)} 条新闻到数据库")
+    except Exception as e:
+        print("[Fail] 写入数据库失败:", e)
+
+    # 异步生成视频任务列表
+    tasks = []
+    executor = ThreadPoolExecutor(max_workers=4)
+
     for idx, article in enumerate(unique_articles[:5]):
         title = article.get("title") or "无标题"
         desc = article.get("description") or ""
-
-        # 🔹 生成简短解说稿（30 秒左右）
         short_text = generate_short_script(title, desc, max_chars=70)
 
         category = article.get("category")
@@ -147,15 +212,20 @@ def main():
         except:
             image_path = None
 
-        # 生成语音
+        # 音频路径
         audio_path = os.path.join(cat_dir, f"voice_{idx}.mp3")
-        asyncio.run(generate_tts(short_text, audio_path))
 
-        # 生成视频
-        output_path = os.path.join(cat_dir, f"news_video_{idx}.mp4")
-        generate_video(image_path, audio_path, short_text, output_path)
+        # TTS 异步任务
+        async def tts_and_video(image_path=image_path, audio_path=audio_path, short_text=short_text,
+                                output_path=os.path.join(cat_dir, f"news_video_{idx}.mp4")):
+            await generate_tts(short_text, audio_path)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(executor, generate_video, image_path, audio_path, short_text, output_path)
 
+        tasks.append(tts_and_video())
+
+    await asyncio.gather(*tasks)
     push_bark("新闻视频生成", f"已生成 {len(unique_articles[:5])} 条视频")
 
 if __name__=="__main__":
-    main()
+    asyncio.run(main())
