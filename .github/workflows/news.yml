@@ -1,4 +1,4 @@
-name: News Fetcher
+name: News Video Generator
 
 on:
   schedule:
@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  run:
+  build-and-run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
@@ -27,7 +27,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run News Fetcher Script
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -35,3 +35,9 @@ jobs:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           BARK_KEY: ${{ secrets.BARK_KEY }}
         run: python news_fetcher.py
+
+      - name: Upload Videos Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: news_videos
+          path: videos/
