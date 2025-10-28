@@ -6,7 +6,9 @@ import requests
 import numpy as np
 from openai import OpenAI
 from supabase import create_client
-from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+from moviepy.video.VideoClip import ImageClip
+from moviepy.audio.io.AudioFileClip import AudioFileClip
+from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 
