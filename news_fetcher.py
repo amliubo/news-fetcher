@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import textwrap
 import requests
@@ -101,11 +102,32 @@ def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/
     draw.multiline_text(((size[0]-w)/2,(size[1]-h)/2), wrapped, font=font, fill=(255,255,255))
     return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
 
-def generate_video(image_path, audio_path, text, output_path):
+def create_subtitle_clips(sentences, audio_duration, font_path, font_size, size=(1080,200)):
+    n = len(sentences)
+    duration_per_sentence = audio_duration / n
+    clips = []
+    for idx, s in enumerate(sentences):
+        clip = create_text_clip(s, duration=duration_per_sentence, font_path=font_path, font_size=font_size, size=size)
+        clip = clip.set_start(idx*duration_per_sentence)
+        clips.append(clip)
+    return clips
+
+def generate_video(image_path, audio_path, text, output_path, font_path, font_size):
     audio = AudioFileClip(audio_path)
     image_clip = ImageClip(image_path).set_duration(audio.duration)
-    txt_clip = create_text_clip(text, duration=audio.duration)
-    video = CompositeVideoClip([image_clip, txt_clip]).set_audio(audio)
+    
+    sentences = re.split(r'(。|！|\!|\.|？|\?)', text)
+    full_sentences = []
+    i = 0
+    while i < len(sentences)-1:
+        full_sentences.append(sentences[i] + sentences[i+1])
+        i += 2
+    if i == len(sentences)-1:
+        full_sentences.append(sentences[-1])
+    
+    subtitle_clips = create_subtitle_clips(full_sentences, audio.duration, font_path, font_size)
+    
+    video = CompositeVideoClip([image_clip, *subtitle_clips]).set_audio(audio)
     video.write_videofile(output_path, fps=24)
     print(f"[Succ] 视频生成完成: {output_path}")
 
@@ -167,7 +189,13 @@ async def main():
         cat_dir = os.path.join(base_dir, category)
         os.makedirs(cat_dir, exist_ok=True)
 
-        image_url = article.get("image_url") or "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"
+        image_url = (
+            article.get("image_url") or
+            article.get("urlToImage") or
+            article.get("cover") or
+            article.get("imgUrl") or
+            "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"
+        )
         image_path = os.path.join(cat_dir, f"cover_{idx}.jpg")
         try:
             r = requests.get(image_url, timeout=10)
