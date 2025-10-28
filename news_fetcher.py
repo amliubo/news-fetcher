@@ -112,7 +112,10 @@ def create_subtitle_clips(sentences, audio_duration, font_path, font_size, size=
         clips.append(clip)
     return clips
 
-def generate_video(image_path, audio_path, text, output_path, font_path, font_size):
+def generate_video(image_path, audio_path, text, output_path,
+                   font_path="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                   font_size=28):
+
     audio = AudioFileClip(audio_path)
     image_clip = ImageClip(image_path).set_duration(audio.duration)
     
