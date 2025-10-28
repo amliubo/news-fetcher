@@ -1,9 +1,9 @@
 import os
-import edge_tts
 import asyncio
 import textwrap
 import requests
 import feedparser
+import pyttsx3
 import numpy as np
 from openai import OpenAI
 from supabase import create_client
@@ -13,6 +13,7 @@ from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+
 
 # ---------------- OpenAI ----------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -40,83 +41,46 @@ def push_bark(title, body):
     except Exception as e:
         print("Bark Error:", e)
 
-def fetch_news(category=None, language="en", max_items=30):
-    """
-    获取新闻：
-    - 中文：优先 36Kr（RSS），不足用新浪 RSS 补充
-    - 英文/其他：NewsAPI
-    """
-    DEFAULT_IMAGE = "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"
-    articles = []
-
+# ---------------- 新闻抓取 ----------------
+def fetch_news(category=None, language="en"):
     if language == "zh":
-        # ---------------- 36Kr RSS ----------------
-        kr_rss_map = {
-            "ai": "https://36kr.com/feed/category/ai",
-            "technology": "https://36kr.com/feed/category/tech",
-            "business": "https://36kr.com/feed/category/startups",
-            "sports": "https://36kr.com/feed/category/sports",
-            "automobile": "https://36kr.com/feed/category/car",
-            "car_maintenance": "https://36kr.com/feed/category/car",
+        rss_map = {
+            "ai": "https://rss.sina.com.cn/tech/ai.xml",
+            "technology": "https://rss.sina.com.cn/tech/rollnews.xml",
+            "business": "https://rss.sina.com.cn/finance/rollnews.xml",
+            "sports": "https://rss.sina.com.cn/sports/global.xml",
+            "automobile": "https://rss.sina.com.cn/auto/newcar.xml",
+            "car_maintenance": "https://rss.sina.com.cn/auto/service.xml",
         }
-        kr_url = kr_rss_map.get(category, "https://36kr.com/feed")
-        print(f"[Info] Fetching 36Kr news from {kr_url}")
+        rss_url = rss_map.get(category, "https://rss.sina.com.cn/tech/rollnews.xml")
+        print(f"[Info] Fetching 国内新闻 from {rss_url}")
+
         try:
-            feed = feedparser.parse(kr_url)
-            for entry in feed.entries[:max_items]:
-                image = entry.get("media_content", [{}])[0].get("url") or DEFAULT_IMAGE
+            feed = feedparser.parse(rss_url)
+            articles = []
+            for entry in feed.entries[:30]:
                 articles.append({
                     "title": entry.get("title", ""),
                     "description": entry.get("summary", ""),
                     "url": entry.get("link", ""),
-                    "source_name": "36Kr",
-                    "author": entry.get("author", ""),
-                    "image_url": image,
+                    "source_name": "新浪新闻",
+                    "author": "",
+                    "image_url": entry.get("media_content", [{}])[0].get("url") \
+                        if "media_content" in entry else \
+                        entry.get("media_thumbnail", [{}])[0].get("url") \
+                        if "media_thumbnail" in entry else \
+                        "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg",
                     "published_at": entry.get("published", datetime.now().isoformat()),
                     "category": category or "technology",
                     "language": "zh"
                 })
-            print(f"[Succ] 36Kr-{category} 获取 {len(articles)} 条新闻")
+            print(f"[Succ] zh-{category} 获取 {len(articles)} 条新闻")
+            return articles
         except Exception as e:
-            print(f"[Fail] 36Kr-{category} 获取失败:", e)
+            print(f"[Fail] 获取 zh-{category} 新闻失败:", e)
+            return []
 
-        # ---------------- 新浪 RSS 补充 ----------------
-        if len(articles) < max_items:
-            rss_map = {
-                "ai": "https://rss.sina.com.cn/tech/ai.xml",
-                "technology": "https://rss.sina.com.cn/tech/rollnews.xml",
-                "business": "https://rss.sina.com.cn/finance/rollnews.xml",
-                "sports": "https://rss.sina.com.cn/sports/global.xml",
-                "automobile": "https://rss.sina.com.cn/auto/newcar.xml",
-                "car_maintenance": "https://rss.sina.com.cn/auto/service.xml",
-            }
-            rss_url = rss_map.get(category, "https://rss.sina.com.cn/tech/rollnews.xml")
-            print(f"[Info] Fetching Sina news from {rss_url}")
-            try:
-                feed = feedparser.parse(rss_url)
-                for entry in feed.entries[:max_items - len(articles)]:
-                    image = entry.get("media_content", [{}])[0].get("url") \
-                            if "media_content" in entry else \
-                            entry.get("media_thumbnail", [{}])[0].get("url") \
-                            if "media_thumbnail" in entry else DEFAULT_IMAGE
-                    articles.append({
-                        "title": entry.get("title", ""),
-                        "description": entry.get("summary", ""),
-                        "url": entry.get("link", ""),
-                        "source_name": "新浪新闻",
-                        "author": entry.get("author", ""),
-                        "image_url": image,
-                        "published_at": entry.get("published", datetime.now().isoformat()),
-                        "category": category or "technology",
-                        "language": "zh"
-                    })
-                print(f"[Succ] 新浪-{category} 补充 {len(articles)} 条新闻")
-            except Exception as e:
-                print(f"[Fail] 新浪-{category} 获取失败:", e)
-
-        return articles
-
-    # ---------------- 英文/其他语言使用 NewsAPI ----------------
+    # 国外新闻
     params = {"apiKey": NEWS_API_KEY, "pageSize": 50}
     if language == "zh":
         params["q"] = category
@@ -155,11 +119,24 @@ def generate_short_script(title, description, max_chars=70):
         print("[Fail] 自动生成简短文案失败:", e)
         return f"{title}。{description[:max_chars]}..."
 
-# ---------------- TTS ----------------
-async def generate_tts(text, output):
-    voice = "zh-CN-YunjianNeural"
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(output)
+# ---------------- 本地 TTS 替代 ----------------
+executor = ThreadPoolExecutor(max_workers=2)
+
+def tts_sync(text, output_path, rate=180, volume=1.0, voice_language="zh"):
+    engine = pyttsx3.init()
+    engine.setProperty('rate', rate)
+    engine.setProperty('volume', volume)
+    voices = engine.getProperty('voices')
+    for v in voices:
+        if voice_language.lower() in v.id.lower() or "chinese" in v.name.lower():
+            engine.setProperty('voice', v.id)
+            break
+    engine.save_to_file(text, output_path)
+    engine.runAndWait()
+
+async def generate_tts(text, output_path, rate=180):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(executor, tts_sync, text, output_path, rate)
 
 # ---------------- 视频生成 ----------------
 def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", font_size=36, size=(1080,200)):
@@ -167,8 +144,7 @@ def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
     wrapped = "\n".join(textwrap.wrap(text, width=20))
-    bbox = draw.textbbox((0,0), wrapped, font=font)
-    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    w, h = draw.textsize(wrapped, font=font)
     draw.multiline_text(((size[0]-w)/2,(size[1]-h)/2), wrapped, font=font, fill=(255,255,255))
     return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
 
@@ -200,10 +176,8 @@ async def main():
         push_bark("新闻抓取","未获取到新闻数据")
         return
 
-    # 去重
     unique_articles = list({a['url']:a for a in all_articles if a.get('url')}.values())
 
-    # 清理字段
     table_fields = ["title","description","url","source_name","author","image_url","published_at","source","category","language"]
     cleaned_articles = []
     for a in unique_articles:
@@ -228,9 +202,7 @@ async def main():
     except Exception as e:
         print("[Fail] 写入数据库失败:", e)
 
-    # 异步生成视频任务列表
     tasks = []
-    executor = ThreadPoolExecutor(max_workers=4)
 
     for idx, article in enumerate(unique_articles[:5]):
         title = article.get("title") or "无标题"
@@ -241,7 +213,6 @@ async def main():
         cat_dir = os.path.join(base_dir, category)
         os.makedirs(cat_dir, exist_ok=True)
 
-        # 下载封面
         image_url = article.get("image_url") or "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"
         image_path = os.path.join(cat_dir, f"cover_{idx}.jpg")
         try:
@@ -250,10 +221,8 @@ async def main():
         except:
             image_path = None
 
-        # 音频路径
         audio_path = os.path.join(cat_dir, f"voice_{idx}.mp3")
 
-        # TTS 异步任务
         async def tts_and_video(image_path=image_path, audio_path=audio_path, short_text=short_text,
                                 output_path=os.path.join(cat_dir, f"news_video_{idx}.mp4")):
             await generate_tts(short_text, audio_path)
