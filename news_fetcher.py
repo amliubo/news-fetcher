@@ -40,46 +40,83 @@ def push_bark(title, body):
     except Exception as e:
         print("Bark Error:", e)
 
-def fetch_news(category=None, language="en"):
-    if language == "zh":
-        rss_map = {
-            "ai": "https://rss.sina.com.cn/tech/ai.xml",
-            "technology": "https://rss.sina.com.cn/tech/rollnews.xml",
-            "business": "https://rss.sina.com.cn/finance/rollnews.xml",
-            "sports": "https://rss.sina.com.cn/sports/global.xml",
-            "automobile": "https://rss.sina.com.cn/auto/newcar.xml",
-            "car_maintenance": "https://rss.sina.com.cn/auto/service.xml",
-        }
-        rss_url = rss_map.get(category, "https://rss.sina.com.cn/tech/rollnews.xml")
-        print(f"[Info] Fetching 国内新闻 from {rss_url}")
+def fetch_news(category=None, language="en", max_items=30):
+    """
+    获取新闻：
+    - 中文：优先 36Kr（RSS），不足用新浪 RSS 补充
+    - 英文/其他：NewsAPI
+    """
+    DEFAULT_IMAGE = "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"
+    articles = []
 
+    if language == "zh":
+        # ---------------- 36Kr RSS ----------------
+        kr_rss_map = {
+            "ai": "https://36kr.com/feed/category/ai",
+            "technology": "https://36kr.com/feed/category/tech",
+            "business": "https://36kr.com/feed/category/startups",
+            "sports": "https://36kr.com/feed/category/sports",
+            "automobile": "https://36kr.com/feed/category/car",
+            "car_maintenance": "https://36kr.com/feed/category/car",
+        }
+        kr_url = kr_rss_map.get(category, "https://36kr.com/feed")
+        print(f"[Info] Fetching 36Kr news from {kr_url}")
         try:
-            feed = feedparser.parse(rss_url)
-            articles = []
-            for entry in feed.entries[:30]:
+            feed = feedparser.parse(kr_url)
+            for entry in feed.entries[:max_items]:
+                image = entry.get("media_content", [{}])[0].get("url") or DEFAULT_IMAGE
                 articles.append({
                     "title": entry.get("title", ""),
                     "description": entry.get("summary", ""),
                     "url": entry.get("link", ""),
-                    "source_name": "新浪新闻",
-                    "author": "",
-                    "image_url": entry.get("media_content", [{}])[0].get("url") \
-                        if "media_content" in entry else \
-                        entry.get("media_thumbnail", [{}])[0].get("url") \
-                        if "media_thumbnail" in entry else \
-                        "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg",
-
+                    "source_name": "36Kr",
+                    "author": entry.get("author", ""),
+                    "image_url": image,
                     "published_at": entry.get("published", datetime.now().isoformat()),
                     "category": category or "technology",
                     "language": "zh"
                 })
-            print(f"[Succ] zh-{category} 获取 {len(articles)} 条新闻")
-            return articles
+            print(f"[Succ] 36Kr-{category} 获取 {len(articles)} 条新闻")
         except Exception as e:
-            print(f"[Fail] 获取 zh-{category} 新闻失败:", e)
-            return []
+            print(f"[Fail] 36Kr-{category} 获取失败:", e)
 
-    # ------------------- 国外新闻（使用 NewsAPI） -------------------
+        # ---------------- 新浪 RSS 补充 ----------------
+        if len(articles) < max_items:
+            rss_map = {
+                "ai": "https://rss.sina.com.cn/tech/ai.xml",
+                "technology": "https://rss.sina.com.cn/tech/rollnews.xml",
+                "business": "https://rss.sina.com.cn/finance/rollnews.xml",
+                "sports": "https://rss.sina.com.cn/sports/global.xml",
+                "automobile": "https://rss.sina.com.cn/auto/newcar.xml",
+                "car_maintenance": "https://rss.sina.com.cn/auto/service.xml",
+            }
+            rss_url = rss_map.get(category, "https://rss.sina.com.cn/tech/rollnews.xml")
+            print(f"[Info] Fetching Sina news from {rss_url}")
+            try:
+                feed = feedparser.parse(rss_url)
+                for entry in feed.entries[:max_items - len(articles)]:
+                    image = entry.get("media_content", [{}])[0].get("url") \
+                            if "media_content" in entry else \
+                            entry.get("media_thumbnail", [{}])[0].get("url") \
+                            if "media_thumbnail" in entry else DEFAULT_IMAGE
+                    articles.append({
+                        "title": entry.get("title", ""),
+                        "description": entry.get("summary", ""),
+                        "url": entry.get("link", ""),
+                        "source_name": "新浪新闻",
+                        "author": entry.get("author", ""),
+                        "image_url": image,
+                        "published_at": entry.get("published", datetime.now().isoformat()),
+                        "category": category or "technology",
+                        "language": "zh"
+                    })
+                print(f"[Succ] 新浪-{category} 补充 {len(articles)} 条新闻")
+            except Exception as e:
+                print(f"[Fail] 新浪-{category} 获取失败:", e)
+
+        return articles
+
+    # ---------------- 英文/其他语言使用 NewsAPI ----------------
     params = {"apiKey": NEWS_API_KEY, "pageSize": 50}
     if language == "zh":
         params["q"] = category
@@ -130,7 +167,8 @@ def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
     wrapped = "\n".join(textwrap.wrap(text, width=20))
-    w, h = draw.textsize(wrapped, font=font)
+    bbox = draw.textbbox((0,0), wrapped, font=font)
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
     draw.multiline_text(((size[0]-w)/2,(size[1]-h)/2), wrapped, font=font, fill=(255,255,255))
     return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
 
