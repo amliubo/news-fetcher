@@ -1,2 +1,7 @@
 supabase
 requests
+openai
+edge-tts
+moviepy
+Pillow
+numpy
