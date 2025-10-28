@@ -2,9 +2,8 @@ import os
 import asyncio
 import textwrap
 import requests
-import feedparser
-import pyttsx3
 import numpy as np
+from gtts import gTTS
 from openai import OpenAI
 from supabase import create_client
 from moviepy.video.VideoClip import ImageClip
@@ -13,7 +12,6 @@ from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-
 
 # ---------------- OpenAI ----------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -28,10 +26,9 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 BARK_KEY = os.getenv("BARK_KEY")
 BARK_URL = f"https://api.day.app/{BARK_KEY}"
 
-CATEGORIES = ["ai","technology","business","sports","automobile","car_maintenance"]
-LANGUAGES = ["en","zh"]
+CATEGORIES = ["ai", "technology", "business", "sports", "automobile", "car_maintenance"]
+LANGUAGES = ["en", "zh"]
 
-# ---------------- Bark ----------------
 def push_bark(title, body):
     try:
         data = {"title": title,"body": body,"isArchive":1}
@@ -43,53 +40,16 @@ def push_bark(title, body):
 
 # ---------------- 新闻抓取 ----------------
 def fetch_news(category=None, language="en"):
+    params = {
+        "apiKey": NEWS_API_KEY,
+        "pageSize": 30,
+    }
     if language == "zh":
-        rss_map = {
-            "ai": "https://rss.sina.com.cn/tech/ai.xml",
-            "technology": "https://rss.sina.com.cn/tech/rollnews.xml",
-            "business": "https://rss.sina.com.cn/finance/rollnews.xml",
-            "sports": "https://rss.sina.com.cn/sports/global.xml",
-            "automobile": "https://rss.sina.com.cn/auto/newcar.xml",
-            "car_maintenance": "https://rss.sina.com.cn/auto/service.xml",
-        }
-        rss_url = rss_map.get(category, "https://rss.sina.com.cn/tech/rollnews.xml")
-        print(f"[Info] Fetching 国内新闻 from {rss_url}")
-
-        try:
-            feed = feedparser.parse(rss_url)
-            articles = []
-            for entry in feed.entries[:30]:
-                articles.append({
-                    "title": entry.get("title", ""),
-                    "description": entry.get("summary", ""),
-                    "url": entry.get("link", ""),
-                    "source_name": "新浪新闻",
-                    "author": "",
-                    "image_url": entry.get("media_content", [{}])[0].get("url") \
-                        if "media_content" in entry else \
-                        entry.get("media_thumbnail", [{}])[0].get("url") \
-                        if "media_thumbnail" in entry else \
-                        "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg",
-                    "published_at": entry.get("published", datetime.now().isoformat()),
-                    "category": category or "technology",
-                    "language": "zh"
-                })
-            print(f"[Succ] zh-{category} 获取 {len(articles)} 条新闻")
-            return articles
-        except Exception as e:
-            print(f"[Fail] 获取 zh-{category} 新闻失败:", e)
-            return []
-
-    # 国外新闻
-    params = {"apiKey": NEWS_API_KEY, "pageSize": 50}
-    if language == "zh":
+        params["language"] = "zh"
         params["q"] = category
     else:
-        params["language"] = language
-        if category not in ["general", "business", "entertainment", "health", "science", "sports", "technology"]:
-            params["q"] = category
-        else:
-            params["category"] = category
+        params["language"] = "en"
+        params["q"] = category
 
     try:
         res = requests.get("https://newsapi.org/v2/top-headlines", params=params, timeout=10)
@@ -119,27 +79,20 @@ def generate_short_script(title, description, max_chars=70):
         print("[Fail] 自动生成简短文案失败:", e)
         return f"{title}。{description[:max_chars]}..."
 
-# ---------------- 本地 TTS 替代 ----------------
+# ---------------- 本地 TTS（gTTS） ----------------
 executor = ThreadPoolExecutor(max_workers=2)
 
-def tts_sync(text, output_path, rate=180, volume=1.0, voice_language="zh"):
-    engine = pyttsx3.init()
-    engine.setProperty('rate', rate)
-    engine.setProperty('volume', volume)
-    voices = engine.getProperty('voices')
-    for v in voices:
-        if voice_language.lower() in v.id.lower() or "chinese" in v.name.lower():
-            engine.setProperty('voice', v.id)
-            break
-    engine.save_to_file(text, output_path)
-    engine.runAndWait()
+def tts_sync_gtts(text, output_path, lang="zh"):
+    tts = gTTS(text=text, lang=lang, slow=False)
+    tts.save(output_path)
 
-async def generate_tts(text, output_path, rate=180):
+async def generate_tts(text, output_path, lang="zh"):
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(executor, tts_sync, text, output_path, rate)
+    await loop.run_in_executor(executor, tts_sync_gtts, text, output_path, lang)
 
 # ---------------- 视频生成 ----------------
-def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", font_size=36, size=(1080,200)):
+def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                     font_size=36, size=(1080,200)):
     img = Image.new("RGBA", size, (0,0,0,150))
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
@@ -176,8 +129,10 @@ async def main():
         push_bark("新闻抓取","未获取到新闻数据")
         return
 
+    # 去重
     unique_articles = list({a['url']:a for a in all_articles if a.get('url')}.values())
 
+    # 写入 Supabase
     table_fields = ["title","description","url","source_name","author","image_url","published_at","source","category","language"]
     cleaned_articles = []
     for a in unique_articles:
@@ -203,7 +158,6 @@ async def main():
         print("[Fail] 写入数据库失败:", e)
 
     tasks = []
-
     for idx, article in enumerate(unique_articles[:5]):
         title = article.get("title") or "无标题"
         desc = article.get("description") or ""
@@ -225,7 +179,7 @@ async def main():
 
         async def tts_and_video(image_path=image_path, audio_path=audio_path, short_text=short_text,
                                 output_path=os.path.join(cat_dir, f"news_video_{idx}.mp4")):
-            await generate_tts(short_text, audio_path)
+            await generate_tts(short_text, audio_path, lang="zh")
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(executor, generate_video, image_path, audio_path, short_text, output_path)
 
