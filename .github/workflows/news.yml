@@ -23,7 +23,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          sudo apt-get install -y ffmpeg fonts-noto-cjk espeak
 
       # 4️ 安装 Python 依赖（从 requirements.txt）
       - name: Install Python dependencies
