@@ -91,13 +91,13 @@ async def generate_tts(text, output_path, lang="zh"):
     await loop.run_in_executor(executor, tts_sync_gtts, text, output_path, lang)
 
 # ---------------- 视频生成 ----------------
-def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                     font_size=36, size=(1080,200)):
+def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", font_size=36, size=(1080,200)):
     img = Image.new("RGBA", size, (0,0,0,150))
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
     wrapped = "\n".join(textwrap.wrap(text, width=20))
-    w, h = draw.textsize(wrapped, font=font)
+    bbox = draw.textbbox((0, 0), wrapped, font=font)
+    w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
     draw.multiline_text(((size[0]-w)/2,(size[1]-h)/2), wrapped, font=font, fill=(255,255,255))
     return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
 
