@@ -134,6 +134,21 @@ def generate_video(image_path, audio_path, text, output_path,
     video.write_videofile(output_path, fps=24)
     print(f"[Succ] 视频生成完成: {output_path}")
 
+# ---------------- 图片下载 ----------------
+
+def download_image(url, save_path, default_path="default_cover.jpg"):
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        if "image" not in r.headers.get("Content-Type", ""):
+            raise ValueError("URL 不是图片")
+        with open(save_path, "wb") as f:
+            f.write(r.content)
+        return save_path
+    except Exception as e:
+        print(f"[Warn] 图片下载失败 {url}, 使用默认封面: {e}")
+        return default_path
+
 # ---------------- 异步主流程 ----------------
 async def main():
     today = datetime.now().strftime("%Y-%m-%d")
@@ -193,26 +208,21 @@ async def main():
         os.makedirs(cat_dir, exist_ok=True)
 
         image_url = (
-            article.get("image_url") or
-            article.get("urlToImage") or
-            article.get("cover") or
-            article.get("imgUrl") or
-            "https://fuss10.elemecdn.com/a/3f/3302e58f9a181d2509f3dc0fa68b0jpeg.jpeg"
+            article.get("image_url")
         )
-        image_path = os.path.join(cat_dir, f"cover_{idx}.jpg")
-        try:
-            r = requests.get(image_url, timeout=10)
-            with open(image_path, "wb") as f: f.write(r.content)
-        except:
-            image_path = None
-
         audio_path = os.path.join(cat_dir, f"voice_{idx}.mp3")
+
+        DEFAULT_COVER = "default_cover.jpg"
+        image_path = download_image(image_url, os.path.join(cat_dir, f"cover_{idx}.jpg"), default_path=DEFAULT_COVER)
 
         async def tts_and_video(image_path=image_path, audio_path=audio_path, short_text=short_text,
                                 output_path=os.path.join(cat_dir, f"news_video_{idx}.mp4")):
             await generate_tts(short_text, audio_path, lang="zh")
+            if not image_path or not os.path.exists(image_path):
+                image_path = DEFAULT_COVER
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(executor, generate_video, image_path, audio_path, short_text, output_path)
+
 
         tasks.append(tts_and_video())
 
