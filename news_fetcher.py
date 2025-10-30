@@ -70,6 +70,7 @@ def download_image(url, save_path, default_path=DEFAULT_COVER):
             raise ValueError("URL 不是图片")
         with open(save_path, "wb") as f:
             f.write(r.content)
+        print(f"[Succ] 图片下载成功: {url}")
         return save_path
     except Exception as e:
         print(f"[Warn] 图片下载失败 {url}, 使用默认封面: {e}")
@@ -111,14 +112,18 @@ def generate_video_script(title, description, max_chars=70):
         print("[Warn] 视频脚本生成失败，使用单段文字:", e)
         return [{"text": f"{title}。{description[:max_chars]}...", "image_url": None, "duration": 30}]
 
-async def generate_tts(text, output_path, voice="alloy", language="zh"):
+# ---------------- AI TTS ----------------
+async def generate_tts(text, output_path, voice="alloy"):
+    """
+    使用 OpenAI TTS 生成 mp3 文件
+    去掉不再支持的 language 参数，并增加容错
+    """
     try:
         def sync_tts():
             response = client.audio.speech.create(
                 model="gpt-4o-mini-tts",
                 voice=voice,
                 input=text,
-                language=language,
                 format="mp3"
             )
             with open(output_path, "wb") as f:
@@ -126,7 +131,7 @@ async def generate_tts(text, output_path, voice="alloy", language="zh"):
             print(f"[Succ] OpenAI TTS 已生成: {output_path}")
         await asyncio.to_thread(sync_tts)
     except Exception as e:
-        print("[Fail] OpenAI TTS 失败:", e)
+        print(f"[Fail] OpenAI TTS 失败: {e}")
 
 # ---------------- 视频生成 ----------------
 async def tts_and_video(idx, article, base_dir):
@@ -152,7 +157,7 @@ async def tts_and_video(idx, article, base_dir):
             image_path = DEFAULT_COVER
 
         audio_path = os.path.join(cat_dir, f"voice_{idx}_{seg_idx}.mp3")
-        await generate_tts(text, audio_path, voice="alloy", language="zh")
+        await generate_tts(text, audio_path, voice="alloy")
 
         audio = AudioFileClip(audio_path)
         img_clip = ImageClip(image_path).set_duration(audio.duration)
