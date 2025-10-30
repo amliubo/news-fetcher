@@ -55,7 +55,7 @@ def fetch_news(category=None, language="en"):
         print(f"[Fail] 获取 {language} 新闻失败:", e)
         return []
 
-def create_text_clip(text, duration, font_path=font_path, font_size=36, size=(1080,80)):
+def create_text_clip(text, duration, font_path=font_path, font_size=36, size=(1080,120)):
     img = Image.new("RGBA", size, (0,0,0,150))
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
