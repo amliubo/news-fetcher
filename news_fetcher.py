@@ -29,7 +29,6 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 BARK_KEY = os.getenv("BARK_KEY")
 BARK_URL = f"https://api.day.app/{BARK_KEY}"
 
-CATEGORIES = ["ai", "technology", "business", "sports", "automobile", "car_maintenance"]
 LANGUAGES = ["en", "zh"]
 
 DEFAULT_COVER = "default_cover.jpg"
@@ -45,39 +44,20 @@ def push_bark(title, body):
         print("Bark Error:", e)
 
 def fetch_news(category=None, language="en"):
-    params = {"apiKey": NEWS_API_KEY, "pageSize":30}
-    if language == "zh":
-        params["language"] = "zh"
+    params = {"apiKey": NEWS_API_KEY, "pageSize":30, "language": language}
+    if category:
         params["q"] = category
-    else:
-        params["language"] = "en"
-        params["q"] = category
-
     try:
         res = requests.get("https://newsapi.org/v2/top-headlines", params=params, timeout=10)
         res.raise_for_status()
         articles = res.json().get("articles", [])
-        print(f"[Succ] {language}-{category} 获取 {len(articles)} 条新闻")
+        print(f"[Succ] {language} 获取 {len(articles)} 条新闻")
         return articles
     except Exception as e:
-        print(f"[Fail] 获取 {language}-{category} 新闻失败:", e)
+        print(f"[Fail] 获取 {language} 新闻失败:", e)
         return []
 
-def download_image(url, save_path, default_path=DEFAULT_COVER):
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        if "image" not in r.headers.get("Content-Type", ""):
-            raise ValueError("URL 不是图片")
-        with open(save_path, "wb") as f:
-            f.write(r.content)
-        print(f"[Succ] 图片下载成功: {url} -> {save_path}")
-        return save_path
-    except Exception as e:
-        print(f"[Warn] 图片下载失败 {url}, 使用默认封面: {e}")
-        return default_path
-
-def create_text_clip(text, duration, font_path=font_path, font_size=36, size=(1080,200)):
+def create_text_clip(text, duration, font_path=font_path, font_size=36, size=(1080,80)):
     img = Image.new("RGBA", size, (0,0,0,150))
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font_path, font_size)
@@ -113,6 +93,23 @@ def generate_video_script(title, description, max_chars=70):
         print("[Warn] 视频脚本生成失败，使用单段文字:", e)
         return [{"text": f"{title}。{description[:max_chars]}...", "image_url": None, "duration": 30}]
 
+def generate_ai_summary(title, description):
+    prompt = f"""
+        请用简洁专业的语气对以下新闻内容进行智能解读，包括：
+        1. 背景概述；
+        2. 当前意义；
+        3. 可能的未来发展趋势；
+        输出一段 80~120 字的中文总结。
+
+        新闻标题：{title}
+        新闻摘要：{description or '无'}
+        """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content.strip()
+
 # ---------------- AI TTS ----------------
 async def generate_tts(text, output_path, voice="alloy"):
     try:
@@ -126,20 +123,32 @@ async def generate_tts(text, output_path, voice="alloy"):
 
 # ---------------- 视频生成 ----------------
 async def tts_and_video(idx, article, base_dir):
+    """
+    生成视频：
+    - 优先使用 article['ai_summary'] 作为文字内容
+    - 如果没有 ai_summary，则使用 title + description 的组合
+    """
     title = article.get("title") or "无标题"
     desc = article.get("description") or ""
+    ai_text = article.get("ai_summary")
     category = article.get("category") or "other"
+    
     cat_dir = os.path.join(base_dir, category)
     os.makedirs(cat_dir, exist_ok=True)
 
-    video_script = generate_video_script(title, desc, max_chars=70)
+    if ai_text:
+        video_script = [{"text": ai_text, "image_url": article.get("image_url"), "duration": 30}]
+    else:
+        video_script = generate_video_script(title, desc, max_chars=70)
+
     clips = []
 
     for seg_idx, seg in enumerate(video_script):
-        text = seg.get("text","")
-        duration = seg.get("duration",5)
+        text = seg.get("text", "")
+        duration = seg.get("duration", 5)
         image_url = seg.get("image_url") or article.get("image_url")
 
+        # 图片处理
         if image_url:
             try:
                 response = requests.get(image_url, timeout=10)
@@ -160,7 +169,7 @@ async def tts_and_video(idx, article, base_dir):
         audio_path = os.path.join(cat_dir, f"voice_{idx}_{seg_idx}.mp3")
         await generate_tts(text, audio_path, voice="alloy")
 
-        # 生成视频片段
+        # 视频片段
         audio = AudioFileClip(audio_path)
         img_clip = ImageClip(image_path).set_duration(audio.duration)
         img_clip = img_clip.resize(lambda t: 1 + 0.05*t/audio.duration)
@@ -174,6 +183,33 @@ async def tts_and_video(idx, article, base_dir):
     final_video.write_videofile(output_path, fps=24)
     print(f"[Succ] 视频生成完成: {output_path}")
 
+
+# ---------------- 标签分类 ----------------
+
+def classify_news_category(title: str, description: str = "") -> str:
+    prompt = f"""
+            请根据以下新闻标题和描述，为新闻选择最合适的分类标签：
+            可选分类包括：科技、商业、体育、娱乐、国际、健康、政治、汽车、教育、其他。
+
+            标题：{title}
+            描述：{description}
+
+            请只返回一个分类标签。
+        """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        category = response.choices[0].message.content.strip()
+        print(f"[AI分类] {title[:30]}... → {category}")
+        return category
+    except Exception as e:
+        print("[Fail] 分类失败:", e)
+        return "其他"
+
 # ---------------- 主流程 ----------------
 async def main():
     today = datetime.now().strftime("%Y-%m-%d")
@@ -181,14 +217,12 @@ async def main():
     os.makedirs(base_dir, exist_ok=True)
 
     # --- 新闻抓取 ---
-    all_articles=[]
+    all_articles = []
     for lang in LANGUAGES:
-        for cat in CATEGORIES:
-            articles = fetch_news(cat, lang)
-            for a in articles:
-                a["category"] = cat
-                a["language"] = lang
-            all_articles.extend(articles)
+        articles = fetch_news(language=lang)
+        for a in articles:
+            a["language"] = lang
+        all_articles.extend(articles)
 
     if not all_articles:
         push_bark("新闻抓取", "未获取到新闻数据")
@@ -198,9 +232,10 @@ async def main():
     unique_articles = list({a['url']:a for a in all_articles if a.get('url')}.values())
 
     # 写入 Supabase
-    table_fields = ["title","description","url","source_name","author","image_url","published_at","source","category","language"]
+    table_fields = ["title","description","url","source_name","author","image_url","published_at","source","category","language","ai_summary"]
     cleaned_articles = []
     for a in unique_articles:
+        category = classify_news_category(a.get("title", ""), a.get("description", ""))
         record = {
             "title": a.get("title"),
             "description": a.get("description"),
@@ -210,9 +245,11 @@ async def main():
             "image_url": a.get("image_url") or a.get("urlToImage"),
             "published_at": a.get("publishedAt") or a.get("published_at"),
             "source": a.get("source") or "",
-            "category": a.get("category"),
+            "category": category,
             "language": a.get("language")
         }
+        record["ai_summary"] = generate_ai_summary(record["title"], record["description"])
+
         record = {k:v for k,v in record.items() if k in table_fields}
         cleaned_articles.append(record)
     try:
