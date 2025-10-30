@@ -226,7 +226,7 @@ async def main():
 
     # 写入 Supabase
     try:
-        supabase.table("news").upsert(cleaned_articles, on_conflict=["url"]).execute()
+        supabase.table("news_articles").upsert(cleaned_articles, on_conflict=["url"]).execute()
         print(f"[Succ] 已写入 {len(cleaned_articles)} 条新闻到数据库")
     except Exception as e:
         print("[Fail] 写入数据库失败:", e)
