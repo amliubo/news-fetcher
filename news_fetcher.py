@@ -1,5 +1,4 @@
 import os
-import re
 import asyncio
 import textwrap
 import requests
@@ -14,7 +13,11 @@ from moviepy.editor import concatenate_videoclips
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 
+# ---------------- 基本配置 ----------------
 font_path = os.path.join(os.path.dirname(__file__), "NotoSansCJK-Regular.ttc")
+AI_SEMAPHORE = asyncio.Semaphore(3)
+DEFAULT_COVER = "default_cover.jpg"
+LANGUAGES = ["en", "zh"]
 
 # ---------------- OpenAI ----------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -24,14 +27,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------------- 新闻 & Bark ----------------
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+# ---------------- Bark ----------------
 BARK_KEY = os.getenv("BARK_KEY")
 BARK_URL = f"https://api.day.app/{BARK_KEY}"
-
-LANGUAGES = ["en", "zh"]
-
-DEFAULT_COVER = "default_cover.jpg"
 
 # ---------------- 工具函数 ----------------
 def push_bark(title, body):
@@ -44,7 +42,7 @@ def push_bark(title, body):
         print("Bark Error:", e)
 
 def fetch_news(category=None, language="en"):
-    params = {"apiKey": NEWS_API_KEY, "pageSize":30, "language": language}
+    params = {"apiKey": os.getenv("NEWS_API_KEY"), "pageSize":30, "language": language}
     if category:
         params["q"] = category
     try:
@@ -68,47 +66,51 @@ def create_text_clip(text, duration, font_path=font_path, font_size=36, size=(10
     return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
 
 # ---------------- AI 功能 ----------------
-def generate_video_script(title, description, max_chars=70):
+async def generate_ai_summary_async(title, description):
     prompt = f"""
-    请为下面新闻生成适合 30 秒的视频脚本，分成多段，每段包含文字和建议图片：
-    标题：{title}
-    内容：{description}
-    字数控制在 {max_chars} 字左右
-    输出格式示例：
-    [
-        {{"text": "...", "image_url": "...", "duration": 5}},
-        {{"text": "...", "image_url": "...", "duration": 8}}
-    ]
+    请用简洁专业的语气对以下新闻内容进行智能解读，包括：
+    1. 背景概述；
+    2. 当前意义；
+    3. 可能的未来发展趋势；
+    输出一段 80~120 字的中文总结。
+
+    新闻标题：{title}
+    新闻摘要：{description or '无'}
     """
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
-        script_text = resp.choices[0].message.content.strip()
-        import json
-        script = json.loads(script_text.replace("\n",""))
-        return script
-    except Exception as e:
-        print("[Warn] 视频脚本生成失败，使用单段文字:", e)
-        return [{"text": f"{title}。{description[:max_chars]}...", "image_url": None, "duration": 30}]
+    async with AI_SEMAPHORE:
+        await asyncio.sleep(1)  # 限流
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role":"user","content":prompt}],
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[Warn] AI 解读失败: {title} -> {e}")
+            return None
 
-def generate_ai_summary(title, description):
+async def classify_news_category_async(title: str, description: str = "") -> str:
     prompt = f"""
-        请用简洁专业的语气对以下新闻内容进行智能解读，包括：
-        1. 背景概述；
-        2. 当前意义；
-        3. 可能的未来发展趋势；
-        输出一段 80~120 字的中文总结。
-
-        新闻标题：{title}
-        新闻摘要：{description or '无'}
-        """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.choices[0].message.content.strip()
+    请根据以下新闻标题和描述，为新闻选择最合适的分类标签：
+    可选分类包括：科技、商业、体育、娱乐、国际、健康、政治、汽车、教育、其他。
+    标题：{title}
+    描述：{description}
+    请只返回一个分类标签。
+    """
+    async with AI_SEMAPHORE:
+        await asyncio.sleep(1)
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            category = response.choices[0].message.content.strip()
+            print(f"[AI分类] {title[:30]}... → {category}")
+            return category
+        except Exception as e:
+            print(f"[Warn] 分类失败: {title} -> {e}")
+            return "其他"
 
 # ---------------- AI TTS ----------------
 async def generate_tts(text, output_path, voice="alloy"):
@@ -123,33 +125,28 @@ async def generate_tts(text, output_path, voice="alloy"):
 
 # ---------------- 视频生成 ----------------
 async def tts_and_video(idx, article, base_dir):
-    """
-    生成视频：
-    - 优先使用 article['ai_summary'] 作为文字内容
-    - 如果没有 ai_summary，则使用 title + description 的组合
-    """
     title = article.get("title") or "无标题"
     desc = article.get("description") or ""
     ai_text = article.get("ai_summary")
     category = article.get("category") or "other"
-    
+
     cat_dir = os.path.join(base_dir, category)
     os.makedirs(cat_dir, exist_ok=True)
 
     if ai_text:
         video_script = [{"text": ai_text, "image_url": article.get("image_url"), "duration": 30}]
     else:
-        video_script = generate_video_script(title, desc, max_chars=70)
+        video_script = [{"text": f"{title}。{desc[:70]}...", "image_url": article.get("image_url"), "duration": 30}]
 
     clips = []
-
     for seg_idx, seg in enumerate(video_script):
         text = seg.get("text", "")
         duration = seg.get("duration", 5)
-        image_url = seg.get("image_url") or article.get("image_url")
+        image_url = seg.get("image_url") or DEFAULT_COVER
 
         # 图片处理
-        if image_url:
+        image_path = DEFAULT_COVER
+        if image_url and image_url != DEFAULT_COVER:
             try:
                 response = requests.get(image_url, timeout=10)
                 response.raise_for_status()
@@ -161,9 +158,6 @@ async def tts_and_video(idx, article, base_dir):
                 print(f"[Succ] 图片加载成功: {image_url}")
             except Exception as e:
                 print(f"[Warn] 图片加载失败 {image_url}, 使用默认封面: {e}")
-                image_path = DEFAULT_COVER
-        else:
-            image_path = DEFAULT_COVER
 
         # TTS
         audio_path = os.path.join(cat_dir, f"voice_{idx}_{seg_idx}.mp3")
@@ -182,33 +176,6 @@ async def tts_and_video(idx, article, base_dir):
     final_video = concatenate_videoclips(clips)
     final_video.write_videofile(output_path, fps=24)
     print(f"[Succ] 视频生成完成: {output_path}")
-
-
-# ---------------- 标签分类 ----------------
-
-def classify_news_category(title: str, description: str = "") -> str:
-    prompt = f"""
-            请根据以下新闻标题和描述，为新闻选择最合适的分类标签：
-            可选分类包括：科技、商业、体育、娱乐、国际、健康、政治、汽车、教育、其他。
-
-            标题：{title}
-            描述：{description}
-
-            请只返回一个分类标签。
-        """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        category = response.choices[0].message.content.strip()
-        print(f"[AI分类] {title[:30]}... → {category}")
-        return category
-    except Exception as e:
-        print("[Fail] 分类失败:", e)
-        return "其他"
 
 # ---------------- 主流程 ----------------
 async def main():
@@ -231,35 +198,41 @@ async def main():
     # 去重
     unique_articles = list({a['url']:a for a in all_articles if a.get('url')}.values())
 
-    # 写入 Supabase
+    # --- 异步分类 & AI 解读 ---
+    category_tasks = [classify_news_category_async(a.get("title",""), a.get("description","")) for a in unique_articles]
+    categories = await asyncio.gather(*category_tasks)
+
+    summary_tasks = [generate_ai_summary_async(a.get("title",""), a.get("description","")) for a in unique_articles]
+    summaries = await asyncio.gather(*summary_tasks)
+
     table_fields = ["title","description","url","source_name","author","image_url","published_at","source","category","language","ai_summary"]
     cleaned_articles = []
-    for a in unique_articles:
-        category = classify_news_category(a.get("title", ""), a.get("description", ""))
+    for article, cat, summ in zip(unique_articles, categories, summaries):
         record = {
-            "title": a.get("title"),
-            "description": a.get("description"),
-            "url": a.get("url"),
-            "source_name": (a.get("source") or {}).get("name") or a.get("source_name"),
-            "author": a.get("author"),
-            "image_url": a.get("image_url") or a.get("urlToImage"),
-            "published_at": a.get("publishedAt") or a.get("published_at"),
-            "source": a.get("source") or "",
-            "category": category,
-            "language": a.get("language")
+            "title": article.get("title"),
+            "description": article.get("description"),
+            "url": article.get("url"),
+            "source_name": (article.get("source") or {}).get("name") or article.get("source_name"),
+            "author": article.get("author"),
+            "image_url": article.get("image_url") or article.get("urlToImage"),
+            "published_at": article.get("publishedAt") or article.get("published_at"),
+            "source": article.get("source") or "",
+            "category": cat,
+            "language": article.get("language"),
+            "ai_summary": summ
         }
-        record["ai_summary"] = generate_ai_summary(record["title"], record["description"])
-
         record = {k:v for k,v in record.items() if k in table_fields}
         cleaned_articles.append(record)
+
+    # 写入 Supabase
     try:
         supabase.table("news").upsert(cleaned_articles, on_conflict=["url"]).execute()
         print(f"[Succ] 已写入 {len(cleaned_articles)} 条新闻到数据库")
     except Exception as e:
         print("[Fail] 写入数据库失败:", e)
 
-    # 并发生成视频（前5条）
-    tasks = [tts_and_video(idx, article, base_dir) for idx, article in enumerate(unique_articles[:5])]
+    # --- 并发生成视频（示例前5条） ---
+    tasks = [tts_and_video(idx, article, base_dir) for idx, article in enumerate(cleaned_articles[:5])]
     await asyncio.gather(*tasks)
     push_bark("新闻视频生成", f"已生成 {len(tasks)} 条视频")
 
