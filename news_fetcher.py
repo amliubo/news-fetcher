@@ -125,7 +125,6 @@ async def generate_tts(text, output_path, voice="alloy"):
                 model="gpt-4o-mini-tts",
                 voice=voice,
                 input=text,
-                format="mp3"
             )
             with open(output_path, "wb") as f:
                 f.write(response.read())
