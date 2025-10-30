@@ -4,15 +4,16 @@ import asyncio
 import textwrap
 import requests
 import numpy as np
-from gtts import gTTS
 from openai import OpenAI
 from supabase import create_client
 from moviepy.video.VideoClip import ImageClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+from moviepy.editor import concatenate_videoclips
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+
+font_path = os.path.join(os.path.dirname(__file__), "NotoSansCJK-Regular.ttc")
 
 # ---------------- OpenAI ----------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -30,6 +31,9 @@ BARK_URL = f"https://api.day.app/{BARK_KEY}"
 CATEGORIES = ["ai", "technology", "business", "sports", "automobile", "car_maintenance"]
 LANGUAGES = ["en", "zh"]
 
+DEFAULT_COVER = "default_cover.jpg"
+
+# ---------------- 工具函数 ----------------
 def push_bark(title, body):
     try:
         data = {"title": title,"body": body,"isArchive":1}
@@ -39,12 +43,8 @@ def push_bark(title, body):
     except Exception as e:
         print("Bark Error:", e)
 
-# ---------------- 新闻抓取 ----------------
 def fetch_news(category=None, language="en"):
-    params = {
-        "apiKey": NEWS_API_KEY,
-        "pageSize": 30,
-    }
+    params = {"apiKey": NEWS_API_KEY, "pageSize":30}
     if language == "zh":
         params["language"] = "zh"
         params["q"] = category
@@ -62,81 +62,7 @@ def fetch_news(category=None, language="en"):
         print(f"[Fail] 获取 {language}-{category} 新闻失败:", e)
         return []
 
-# ---------------- AI解读 ----------------
-def generate_short_script(title, description, max_chars=70):
-    prompt = f"""
-    请将以下新闻内容改写为适合 30 秒视频的中文解说稿，尽量简短精炼，字数控制在 {max_chars} 字左右：
-    标题: {title}
-    内容: {description}
-    """
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
-        short_text = resp.choices[0].message.content.strip()
-        return short_text
-    except Exception as e:
-        print("[Fail] 自动生成简短文案失败:", e)
-        return f"{title}。{description[:max_chars]}..."
-
-# ---------------- 本地 TTS（gTTS） ----------------
-executor = ThreadPoolExecutor(max_workers=2)
-
-def tts_sync_gtts(text, output_path, lang="zh"):
-    tts = gTTS(text=text, lang=lang, slow=False)
-    tts.save(output_path)
-
-async def generate_tts(text, output_path, lang="zh"):
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(executor, tts_sync_gtts, text, output_path, lang)
-
-# ---------------- 视频生成 ----------------
-def create_text_clip(text, duration, font_path=r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", font_size=36, size=(1080,200)):
-    img = Image.new("RGBA", size, (0,0,0,150))
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype(font_path, font_size)
-    wrapped = "\n".join(textwrap.wrap(text, width=20))
-    bbox = draw.textbbox((0, 0), wrapped, font=font)
-    w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
-    draw.multiline_text(((size[0]-w)/2,(size[1]-h)/2), wrapped, font=font, fill=(255,255,255))
-    return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
-
-def create_subtitle_clips(sentences, audio_duration, font_path, font_size, size=(1080,200)):
-    n = len(sentences)
-    duration_per_sentence = audio_duration / n
-    clips = []
-    for idx, s in enumerate(sentences):
-        clip = create_text_clip(s, duration=duration_per_sentence, font_path=font_path, font_size=font_size, size=size)
-        clip = clip.set_start(idx*duration_per_sentence)
-        clips.append(clip)
-    return clips
-
-def generate_video(image_path, audio_path, text, output_path,
-                   font_path="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                   font_size=28):
-
-    audio = AudioFileClip(audio_path)
-    image_clip = ImageClip(image_path).set_duration(audio.duration)
-    
-    sentences = re.split(r'(。|！|\!|\.|？|\?)', text)
-    full_sentences = []
-    i = 0
-    while i < len(sentences)-1:
-        full_sentences.append(sentences[i] + sentences[i+1])
-        i += 2
-    if i == len(sentences)-1:
-        full_sentences.append(sentences[-1])
-    
-    subtitle_clips = create_subtitle_clips(full_sentences, audio.duration, font_path, font_size)
-    
-    video = CompositeVideoClip([image_clip, *subtitle_clips]).set_audio(audio)
-    video.write_videofile(output_path, fps=24)
-    print(f"[Succ] 视频生成完成: {output_path}")
-
-# ---------------- 图片下载 ----------------
-
-def download_image(url, save_path, default_path="default_cover.jpg"):
+def download_image(url, save_path, default_path=DEFAULT_COVER):
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
@@ -149,24 +75,115 @@ def download_image(url, save_path, default_path="default_cover.jpg"):
         print(f"[Warn] 图片下载失败 {url}, 使用默认封面: {e}")
         return default_path
 
-# ---------------- 异步主流程 ----------------
+def create_text_clip(text, duration, font_path=font_path, font_size=36, size=(1080,200)):
+    img = Image.new("RGBA", size, (0,0,0,150))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype(font_path, font_size)
+    wrapped = "\n".join(textwrap.wrap(text, width=20))
+    bbox = draw.textbbox((0, 0), wrapped, font=font)
+    w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+    draw.multiline_text(((size[0]-w)/2,(size[1]-h)/2), wrapped, font=font, fill=(255,255,255))
+    return ImageClip(np.array(img)).set_duration(duration).set_position(("center","bottom"))
+
+# ---------------- AI 功能 ----------------
+def generate_video_script(title, description, max_chars=70):
+    prompt = f"""
+    请为下面新闻生成适合 30 秒的视频脚本，分成多段，每段包含文字和建议图片：
+    标题：{title}
+    内容：{description}
+    字数控制在 {max_chars} 字左右
+    输出格式示例：
+    [
+        {{"text": "...", "image_url": "...", "duration": 5}},
+        {{"text": "...", "image_url": "...", "duration": 8}}
+    ]
+    """
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}]
+        )
+        script_text = resp.choices[0].message.content.strip()
+        import json
+        script = json.loads(script_text.replace("\n",""))
+        return script
+    except Exception as e:
+        print("[Warn] 视频脚本生成失败，使用单段文字:", e)
+        return [{"text": f"{title}。{description[:max_chars]}...", "image_url": None, "duration": 30}]
+
+async def generate_tts(text, output_path, voice="alloy", language="zh"):
+    try:
+        def sync_tts():
+            response = client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice=voice,
+                input=text,
+                language=language,
+                format="mp3"
+            )
+            with open(output_path, "wb") as f:
+                f.write(response.read())
+            print(f"[Succ] OpenAI TTS 已生成: {output_path}")
+        await asyncio.to_thread(sync_tts)
+    except Exception as e:
+        print("[Fail] OpenAI TTS 失败:", e)
+
+# ---------------- 视频生成 ----------------
+async def tts_and_video(idx, article, base_dir):
+    title = article.get("title") or "无标题"
+    desc = article.get("description") or ""
+    category = article.get("category") or "other"
+    cat_dir = os.path.join(base_dir, category)
+    os.makedirs(cat_dir, exist_ok=True)
+
+    video_script = generate_video_script(title, desc, max_chars=70)
+    clips = []
+
+    for seg_idx, seg in enumerate(video_script):
+        text = seg.get("text","")
+        duration = seg.get("duration",5)
+
+        # 图片优先级：脚本 image_url > 新闻 image_url > 默认封面
+        image_url = seg.get("image_url") or article.get("image_url")
+        save_path = os.path.join(cat_dir, f"cover_{idx}_{seg_idx}.jpg")
+        if image_url:
+            image_path = download_image(image_url, save_path)
+        else:
+            image_path = DEFAULT_COVER
+
+        audio_path = os.path.join(cat_dir, f"voice_{idx}_{seg_idx}.mp3")
+        await generate_tts(text, audio_path, voice="alloy", language="zh")
+
+        audio = AudioFileClip(audio_path)
+        img_clip = ImageClip(image_path).set_duration(audio.duration)
+        img_clip = img_clip.resize(lambda t: 1 + 0.05*t/audio.duration)  # 简单动态效果
+        subtitle = create_text_clip(text, audio.duration)
+        clip = CompositeVideoClip([img_clip, subtitle]).set_audio(audio)
+        clips.append(clip)
+
+    output_path = os.path.join(cat_dir, f"news_video_{idx}.mp4")
+    final_video = concatenate_videoclips(clips)
+    final_video.write_videofile(output_path, fps=24)
+    print(f"[Succ] 视频生成完成: {output_path}")
+
+# ---------------- 主流程 ----------------
 async def main():
     today = datetime.now().strftime("%Y-%m-%d")
     base_dir = os.path.join("videos", today)
     os.makedirs(base_dir, exist_ok=True)
 
+    # --- 新闻抓取 ---
     all_articles=[]
     for lang in LANGUAGES:
         for cat in CATEGORIES:
             articles = fetch_news(cat, lang)
             for a in articles:
-                a["category"]=cat
-                a["language"]=lang
+                a["category"] = cat
+                a["language"] = lang
             all_articles.extend(articles)
-            print(f"[Succ] {lang}-{cat} 获取 {len(articles)} 条新闻")
 
     if not all_articles:
-        push_bark("新闻抓取","未获取到新闻数据")
+        push_bark("新闻抓取", "未获取到新闻数据")
         return
 
     # 去重
@@ -190,44 +207,16 @@ async def main():
         }
         record = {k:v for k,v in record.items() if k in table_fields}
         cleaned_articles.append(record)
-
     try:
         supabase.table("news").upsert(cleaned_articles, on_conflict=["url"]).execute()
         print(f"[Succ] 已写入 {len(cleaned_articles)} 条新闻到数据库")
     except Exception as e:
         print("[Fail] 写入数据库失败:", e)
 
-    tasks = []
-    for idx, article in enumerate(unique_articles[:5]):
-        title = article.get("title") or "无标题"
-        desc = article.get("description") or ""
-        short_text = generate_short_script(title, desc, max_chars=70)
-
-        category = article.get("category")
-        cat_dir = os.path.join(base_dir, category)
-        os.makedirs(cat_dir, exist_ok=True)
-
-        image_url = (
-            article.get("image_url")
-        )
-        audio_path = os.path.join(cat_dir, f"voice_{idx}.mp3")
-
-        DEFAULT_COVER = "default_cover.jpg"
-        image_path = download_image(image_url, os.path.join(cat_dir, f"cover_{idx}.jpg"), default_path=DEFAULT_COVER)
-
-        async def tts_and_video(image_path=image_path, audio_path=audio_path, short_text=short_text,
-                                output_path=os.path.join(cat_dir, f"news_video_{idx}.mp4")):
-            await generate_tts(short_text, audio_path, lang="zh")
-            if not image_path or not os.path.exists(image_path):
-                image_path = DEFAULT_COVER
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(executor, generate_video, image_path, audio_path, short_text, output_path)
-
-
-        tasks.append(tts_and_video())
-
+    # 并发生成视频（前5条）
+    tasks = [tts_and_video(idx, article, base_dir) for idx, article in enumerate(unique_articles[:5])]
     await asyncio.gather(*tasks)
-    push_bark("新闻视频生成", f"已生成 {len(unique_articles[:5])} 条视频")
+    push_bark("新闻视频生成", f"已生成 {len(tasks)} 条视频")
 
 if __name__=="__main__":
     asyncio.run(main())
