@@ -115,23 +115,14 @@ def generate_video_script(title, description, max_chars=70):
 
 # ---------------- AI TTS ----------------
 async def generate_tts(text, output_path, voice="alloy"):
-    """
-    使用 OpenAI TTS 生成 mp3 文件
-    去掉不再支持的 language 参数，并增加容错
-    """
     try:
-        def sync_tts():
-            response = client.audio.speech.create(
-                model="gpt-4o-mini-tts",
-                voice=voice,
-                input=text,
-            )
-            with open(output_path, "wb") as f:
-                f.write(response.read())
-            print(f"[Succ] OpenAI TTS 已生成: {output_path}")
-        await asyncio.to_thread(sync_tts)
+        import edge_tts
+        tts_voice = "zh-CN-XiaoxiaoNeural"
+        tts = edge_tts.Communicate(text, tts_voice)
+        await tts.save(output_path)
+        print(f"[Succ] Edge TTS 已生成: {output_path}")
     except Exception as e:
-        print(f"[Fail] OpenAI TTS 失败: {e}")
+        print(f"[Fail] Edge TTS 失败: {e}")
 
 # ---------------- 视频生成 ----------------
 async def tts_and_video(idx, article, base_dir):
