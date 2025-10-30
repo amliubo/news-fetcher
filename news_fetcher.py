@@ -4,6 +4,7 @@ import asyncio
 import textwrap
 import requests
 import numpy as np
+from io import BytesIO
 from openai import OpenAI
 from supabase import create_client
 from moviepy.video.VideoClip import ImageClip
@@ -70,7 +71,7 @@ def download_image(url, save_path, default_path=DEFAULT_COVER):
             raise ValueError("URL 不是图片")
         with open(save_path, "wb") as f:
             f.write(r.content)
-        print(f"[Succ] 图片下载成功: {url}")
+        print(f"[Succ] 图片下载成功: {url} -> {save_path}")
         return save_path
     except Exception as e:
         print(f"[Warn] 图片下载失败 {url}, 使用默认封面: {e}")
@@ -147,25 +148,37 @@ async def tts_and_video(idx, article, base_dir):
     for seg_idx, seg in enumerate(video_script):
         text = seg.get("text","")
         duration = seg.get("duration",5)
-
-        # 图片优先级：脚本 image_url > 新闻 image_url > 默认封面
         image_url = seg.get("image_url") or article.get("image_url")
-        save_path = os.path.join(cat_dir, f"cover_{idx}_{seg_idx}.jpg")
+
         if image_url:
-            image_path = download_image(image_url, save_path)
+            try:
+                response = requests.get(image_url, timeout=10)
+                response.raise_for_status()
+                if "image" not in response.headers.get("Content-Type", ""):
+                    raise ValueError("URL 不是图片")
+                img = Image.open(BytesIO(response.content))
+                image_path = os.path.join(cat_dir, f"temp_cover_{idx}_{seg_idx}_{int(datetime.now().timestamp())}.jpg")
+                img.save(image_path)
+                print(f"[Succ] 图片加载成功: {image_url}")
+            except Exception as e:
+                print(f"[Warn] 图片加载失败 {image_url}, 使用默认封面: {e}")
+                image_path = DEFAULT_COVER
         else:
             image_path = DEFAULT_COVER
 
+        # TTS
         audio_path = os.path.join(cat_dir, f"voice_{idx}_{seg_idx}.mp3")
         await generate_tts(text, audio_path, voice="alloy")
 
+        # 生成视频片段
         audio = AudioFileClip(audio_path)
         img_clip = ImageClip(image_path).set_duration(audio.duration)
-        img_clip = img_clip.resize(lambda t: 1 + 0.05*t/audio.duration)  # 简单动态效果
+        img_clip = img_clip.resize(lambda t: 1 + 0.05*t/audio.duration)
         subtitle = create_text_clip(text, audio.duration)
         clip = CompositeVideoClip([img_clip, subtitle]).set_audio(audio)
         clips.append(clip)
 
+    # 合并视频片段
     output_path = os.path.join(cat_dir, f"news_video_{idx}.mp4")
     final_video = concatenate_videoclips(clips)
     final_video.write_videofile(output_path, fps=24)
