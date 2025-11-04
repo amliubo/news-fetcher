@@ -16,7 +16,7 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 # ---------------- 工具函数 ----------------
 def fetch_news(language="en"):
-    params = {"apiKey": os.getenv("NEWS_API_KEY"), "pageSize": 30, "language": language}
+    params = {"apiKey": os.getenv("NEWS_API_KEY"), "pageSize": 10, "language": language}
     try:
         res = requests.get("https://newsapi.org/v2/top-headlines", params=params, timeout=10)
         res.raise_for_status()
